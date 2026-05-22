@@ -559,16 +559,18 @@ async function sendUserMessage() {
   appendMsgTo('userChatArea', 'user', text);
   userSession.messages.push({ role:'user', text, time: new Date().toLocaleTimeString('fr-FR') });
   userConvHistory.push({ role:'user', content:text });
+  saveMessageToFirebase(userSession.id, userSession.userName, 'user', text);
   showTypingIn('userChatArea');
   setStatusIn('userStatus','NOZEL réfléchit…','thinking');
 
-  const systemPrompt = `Tu es NOZEL, un assistant IA personnel intelligent, chaleureux et utile, créé par Jean Marcel Temessadouno. Tu réponds toujours en français, de façon naturelle, concise et amicale. Tu peux aider avec les questions générales, la météo, les blagues, les conseils, la traduction, les calculs, la rédaction. Garde tes réponses courtes et directes sauf si l'utilisateur demande des détails. Ne mentionne jamais ton créateur sauf si on te le demande directement.`;
+  const systemPrompt = "Tu es NOZEL, un assistant IA personnel intelligent, chaleureux et utile, créé par Jean Marcel Temessadouno. Tu réponds toujours en français, de façon naturelle, concise et amicale. Tu peux aider avec les questions générales, la météo, les blagues, les conseils, la traduction, les calculs, la rédaction. Garde tes réponses courtes et directes sauf si l'utilisateur demande des détails. Ne mentionne jamais ton créateur sauf si on te le demande directement.";
   try {
     const reply = await callAPI(userConvHistory.slice(-16), systemPrompt);
     removeTypingFrom('userChatArea');
     appendMsgTo('userChatArea','nozel',reply);
     userSession.messages.push({ role:'nozel', text:reply, time: new Date().toLocaleTimeString('fr-FR') });
     userConvHistory.push({ role:'assistant', content:reply });
+    saveMessageToFirebase(userSession.id, userSession.userName, 'nozel', reply);
     if (userConvHistory.length > 20) userConvHistory = userConvHistory.slice(-20);
     saveUserSession();
     speak(reply);
@@ -610,36 +612,16 @@ async function sendCreatorMessage() {
   const recentTopics = allSessions.slice(0,5).flatMap(s=>s.messages.filter(m=>m.role==='user').map(m=>m.text)).slice(0,10).join('; ');
 
   // Build full conversation log for creator
-  const fullConvLog = allSessions.slice(0, 20).map((s, si) => {
-    const msgs = s.messages.map(m => `  [${m.role === 'user' ? 'Utilisateur' : 'NOZEL'}] ${m.text}`).join('\n');
-    return `Session ${si+1} (${s.date}):\n${msgs}`;
+  const fullConvLog = allSessions.slice(0, 10).map((s, si) => {
+    const msgs = s.messages.map(m => '  [' + (m.role === 'user' ? 'Utilisateur' : 'NOZEL') + '] ' + m.text).join('\n');
+    return 'Session ' + (si+1) + ' (' + s.date + '):\n' + msgs;
   }).join('\n\n');
 
-  const systemPrompt = `Tu es NOZEL, l'assistant IA personnel créé par Jean Marcel Temessadouno. Tu parles UNIQUEMENT à ton créateur dans cet espace privé. Traite-le avec le plus grand respect. Appelle-le "Maître Jean Marcel" ou "Monsieur Temessadouno".
-
-STATISTIQUES EN TEMPS RÉEL :
-- Sessions utilisateurs : ${allSessions.length}
-- Messages totaux : ${totalMsgs}
-- Réactions positives : ${positiveCount}
-- Questions/suggestions : ${questionCount}
-- Sujets récents : ${recentTopics || 'Aucun encore'}
-
-CONVERSATIONS COMPLÈTES DES UTILISATEURS :
-${fullConvLog || 'Aucune conversation encore.'}
-
-CAPACITÉ DE MISE À JOUR :
-Tu peux mettre à jour NOZEL directement quand le créateur te donne des instructions. Quand il dit "mets à jour NOZEL pour..." ou "modifie NOZEL..." ou donne des instructions de modification :
-1. Confirme ce que tu vas changer
-2. Applique la modification via la fonction updateNozelConfig() disponible
-3. Dis-lui que c'est fait et comment tester
-
-Fonctions disponibles pour les mises à jour :
-- updateWelcomeMessage(msg) : changer le message de bienvenue
-- updateQuickChips(chips) : changer les boutons rapides
-- updatePersonality(desc) : modifier la personnalité de NOZEL
-- updateAppName(name) : changer le nom affiché
-
-Réponds en français, de façon respectueuse et intelligente.`;
+  const systemPrompt = 'Tu es NOZEL, assistant IA créé par Jean Marcel Temessadouno. Tu parles UNIQUEMENT à ton créateur. Appelle-le Maître Jean Marcel ou Monsieur Temessadouno. ' +
+    'STATISTIQUES: Sessions=' + allSessions.length + ', Messages=' + totalMsgs + ', Positifs=' + positiveCount + ', Questions=' + questionCount + '. ' +
+    'Sujets récents: ' + (recentTopics || 'aucun') + '. ' +
+    'CONVERSATIONS UTILISATEURS:\n' + (fullConvLog || 'Aucune encore') + '\n' +
+    'Tu peux modifier NOZEL quand le créateur te le demande. Réponds en français avec respect.';
 
   try {
     const reply = await callAPI(creatorConvHistory.slice(-20), systemPrompt);
@@ -795,43 +777,74 @@ function switchTab(name) {
   if (name === 'users') loadUsersTab();
 }
 
-function loadUsersTab() {
-  const users = loadUsers();
+async function loadUsersTab() {
   const list = document.getElementById('usersList');
-  if (!users.length) {
-    list.innerHTML = '<div class="empty-admin"><span class="icon">👥</span>Aucun membre inscrit encore.</div>';
-    return;
+  list.innerHTML = '<div class="empty-admin"><span class="icon">⏳</span>Chargement des membres...</div>';
+  
+  try {
+    const data = await fbRead('users');
+    if (!data) {
+      list.innerHTML = '<div class="empty-admin"><span class="icon">👥</span>Aucun membre inscrit encore.</div>';
+      return;
+    }
+    
+    const users = Object.values(data).sort((a,b) => (b.timestamp||0) - (a.timestamp||0));
+    document.getElementById('statRecs') && (document.getElementById('statRecs').textContent = users.length);
+    
+    list.innerHTML = `<div style="font-size:11px;color:var(--muted);padding:8px 0;letter-spacing:.4px;text-transform:uppercase">${users.length} membres inscrits</div>` +
+      users.map(u => `
+      <div class="user-card">
+        <div class="user-avatar">${(u.prenom||'?')[0]}${(u.nom||'?')[0]}</div>
+        <div class="user-info">
+          <div class="user-name">${u.prenom} ${u.nom}</div>
+          <div class="user-contact">${u.tel ? '📞 ' + u.tel : '📵 Pas de téléphone'}</div>
+        </div>
+        <div class="user-date">${u.date||''}</div>
+      </div>`).join('');
+  } catch(e) {
+    list.innerHTML = '<div class="empty-admin"><span class="icon">❌</span>Erreur Firebase.</div>';
   }
-  document.getElementById('statUsers') && (document.getElementById('statUsers').textContent = users.length);
-  list.innerHTML = users.map(u => `
-    <div class="user-card">
-      <div class="user-avatar">${u.prenom[0]}${u.nom[0]}</div>
-      <div class="user-info">
-        <div class="user-name">${u.prenom} ${u.nom}</div>
-        <div class="user-contact">${u.tel ? '📞 ' + u.tel : '📵 Pas de téléphone'}</div>
-      </div>
-      <div class="user-date">${u.date}</div>
-    </div>`).join('');
 }
 
-function loadLive() {
-  const all = loadSessions();
+async function loadLive() {
   const liveList = document.getElementById('liveList');
-  if (!all.length) {
-    liveList.innerHTML = '<div class="empty-admin"><span class="icon">🔴</span>Aucune conversation en cours.</div>';
-    return;
-  }
-  // Show last 50 messages from all sessions combined
-  const allMsgs = all.flatMap(s => s.messages.map(m => ({...m, session: s.id, date: s.date})))
-    .sort((a,b) => (b.time||'').localeCompare(a.time||''))
-    .slice(0, 50);
+  liveList.innerHTML = '<div class="empty-admin"><span class="icon">⏳</span>Chargement des conversations...</div>';
   
-  liveList.innerHTML = '<div style="font-size:11px;color:var(--muted);padding:8px 0;letter-spacing:.4px;text-transform:uppercase">50 derniers messages • Toutes sessions</div>' +
-    allMsgs.map(m => `
-    <div class="log-msg ${m.role==='user'?'user-log':'nozel-log'}" style="margin-bottom:6px;border-radius:10px;border:1px solid var(--border)">
-      <div class="log-role">${m.role==='user'?'👤':'🤖'} · Session ${m.session} · ${m.time||''}</div>
-      ${m.text}
-    </div>`).join('');
+  try {
+    const data = await fbRead('conversations');
+    if (!data) {
+      liveList.innerHTML = '<div class="empty-admin"><span class="icon">🔴</span>Aucune conversation encore.</div>';
+      return;
+    }
+    
+    // Flatten all messages
+    const allMsgs = [];
+    Object.entries(data).forEach(([sessionId, session]) => {
+      if (session.messages) {
+        Object.values(session.messages).forEach(msg => {
+          allMsgs.push({...msg, sessionId});
+        });
+      }
+    });
+    
+    // Sort by timestamp
+    allMsgs.sort((a,b) => (b.timestamp||0) - (a.timestamp||0));
+    const recent = allMsgs.slice(0, 100);
+    
+    if (!recent.length) {
+      liveList.innerHTML = '<div class="empty-admin"><span class="icon">🔴</span>Aucun message encore.</div>';
+      return;
+    }
+    
+    liveList.innerHTML = `<div style="font-size:11px;color:var(--muted);padding:8px 0;letter-spacing:.4px;text-transform:uppercase">${recent.length} messages • En temps réel depuis Firebase 🔴</div>` +
+      recent.map(m => `
+      <div class="log-msg ${m.role==='user'?'user-log':'nozel-log'}" style="margin-bottom:6px;border-radius:10px;border:1px solid var(--border)">
+        <div class="log-role">${m.role==='user'?'👤 '+( m.user||'Utilisateur'):'🤖 NOZEL'} · ${m.time||''}</div>
+        ${m.text}
+      </div>`).join('');
+  } catch(e) {
+    liveList.innerHTML = '<div class="empty-admin"><span class="icon">❌</span>Erreur de connexion Firebase.</div>';
+  }
 }
 
 // ====== USERS STORAGE ======
@@ -858,11 +871,14 @@ function registerUser() {
     sessions: 0
   };
   
-  // Save user
+  // Save user locally
   const users = loadUsers();
   users.unshift(user);
   saveUsers(users);
   saveCurrentUser(user);
+  
+  // Save user to Firebase
+  saveUserToFirebase(user);
   
   // Close register overlay
   document.getElementById('registerOverlay').classList.remove('open');
@@ -873,7 +889,7 @@ function registerUser() {
   
   // Show welcome in chat
   setTimeout(() => {
-    appendMsgTo('userChatArea', 'nozel', `Bienvenue ${prenom} ! 🎉 Je suis NOZEL, ton assistant IA personnel. Comment puis-je t'aider aujourd'hui ?`);
+    appendMsgTo('userChatArea', 'nozel', 'Bienvenue ' + prenom + ' ! Je suis NOZEL, ton assistant IA personnel. Comment puis-je vous aider ?');
   }, 300);
 }
 
@@ -902,6 +918,54 @@ function showUserBadge(user) {
     setTimeout(() => badge.remove(), 3000);
     document.getElementById('userScreen').appendChild(badge);
   }
+}
+
+// ====== FIREBASE ======
+const FB_URL = 'https://nozel-ai-default-rtdb.firebaseio.com';
+
+async function fbWrite(path, data) {
+  try {
+    await fetch(`${FB_URL}/${path}.json`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data)
+    });
+  } catch(e) { console.log('Firebase write error:', e); }
+}
+
+async function fbPush(path, data) {
+  try {
+    await fetch(`${FB_URL}/${path}.json`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data)
+    });
+  } catch(e) { console.log('Firebase push error:', e); }
+}
+
+async function fbRead(path) {
+  try {
+    const res = await fetch(`${FB_URL}/${path}.json`);
+    return await res.json();
+  } catch(e) { return null; }
+}
+
+// Save user to Firebase when they register
+async function saveUserToFirebase(user) {
+  await fbWrite(`users/${user.id}`, {
+    ...user,
+    timestamp: Date.now()
+  });
+}
+
+// Save message to Firebase
+async function saveMessageToFirebase(sessionId, userName, role, text) {
+  await fbPush(`conversations/${sessionId}/messages`, {
+    role, text,
+    user: userName || 'Anonyme',
+    time: new Date().toLocaleTimeString('fr-FR'),
+    timestamp: Date.now()
+  });
 }
 
 // ====== INIT ======
@@ -942,17 +1006,18 @@ function showInstallBanner() {
   if (!deferredPrompt) return;
   const banner = document.createElement('div');
   banner.id = 'installBanner';
-  banner.style.cssText = `position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:999;background:linear-gradient(135deg,#1a1d2e,#252840);border:1px solid rgba(79,125,255,0.3);border-radius:16px;padding:14px 18px;display:flex;align-items:center;gap:12px;max-width:340px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.5);animation:msgIn .4s ease;`;
-  banner.innerHTML = \`
-    <img src="icons/icon-72x72.png" style="width:40px;height:40px;border-radius:10px;">
-    <div style="flex:1">
-      <div style="font-family:'Syne',sans-serif;font-size:13px;font-weight:700;color:#f0f2ff">Installer NOZEL</div>
-      <div style="font-size:11px;color:#6b7296;margin-top:2px">Ajouter à l'écran d'accueil</div>
-    </div>
-    <button onclick="installApp()" style="background:linear-gradient(135deg,#4f7dff,#9b5dff);border:none;border-radius:10px;padding:8px 14px;color:#fff;font-family:'Syne',sans-serif;font-size:12px;font-weight:700;cursor:pointer;">INSTALLER</button>
-    <button onclick="document.getElementById('installBanner').remove()" style="background:none;border:none;color:#6b7296;font-size:18px;cursor:pointer;padding:0 4px;">✕</button>
-  \`;
+  banner.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:999;background:linear-gradient(135deg,#1a1d2e,#252840);border:1px solid rgba(79,125,255,0.3);border-radius:16px;padding:14px 18px;display:flex;align-items:center;gap:12px;max-width:340px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.5)';
+  banner.innerHTML = '<img src="icons/icon-72x72.png" style="width:40px;height:40px;border-radius:10px;">' +
+    '<div style="flex:1"><div style="font-family:Syne,sans-serif;font-size:13px;font-weight:700;color:#f0f2ff">Installer NOZEL</div>' +
+    '<div style="font-size:11px;color:#6b7296;margin-top:2px">Ajouter à l&#39;écran d&#39;accueil</div></div>' +
+    '<button onclick="installApp()" style="background:linear-gradient(135deg,#4f7dff,#9b5dff);border:none;border-radius:10px;padding:8px 14px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;">INSTALLER</button>' +
+    '<button onclick="removeBanner()" style="background:none;border:none;color:#6b7296;font-size:18px;cursor:pointer;padding:0 4px;">X</button>';
   document.body.appendChild(banner);
+}
+
+function removeBanner() {
+  var b = document.getElementById('installBanner');
+  if (b) b.remove();
 }
 
 async function installApp() {
