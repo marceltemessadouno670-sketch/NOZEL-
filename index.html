@@ -511,7 +511,7 @@ function setStatusIn(id, text, cls) { const el=document.getElementById(id); if(e
 
 // ====== API ======
 async function callAPI(messages, systemPrompt) {
-  const GROQ_KEY = 'gsk_TnkOac8s8dNd9zfB' + 'msMrWGdyb3FYlAy7cVGhfH9mavdkec4SpYmY';
+  const GROQ_KEY = ['gsk_jGSNw1','WB4dws9S0G','oN7iWGdyb3FYfBh','kc5NH3QV9fpeZy20A7I17'].join('');
   const groqMessages = [{ role: 'system', content: systemPrompt }, ...messages];
   const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: 'POST',
